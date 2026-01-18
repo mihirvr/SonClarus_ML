@@ -1,0 +1,9 @@
+torch
+torchaudio
+speechbrain
+openai-whisper
+numpy
+scipy
+matplotlib
+soundfile
+tqdm
