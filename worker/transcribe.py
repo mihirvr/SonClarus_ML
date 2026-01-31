@@ -10,6 +10,7 @@ Key assumptions:
 - Inference-only (no training or fine-tuning)
 """
 
+import json
 import os
 import sys
 import whisper
@@ -113,30 +114,51 @@ if __name__ == "__main__":
     Run transcription as a standalone script.
     
     Usage:
-        python transcribe.py <audio_path> [model_size]
+        python transcribe.py <audio_path> [model_size] [output_dir]
     
     Example:
-        python transcribe.py data/separated/audio_speaker_1.wav base
+        python transcribe.py data/separated/audio_speaker_1.wav base data/transcripts
     """
     
     if len(sys.argv) < 2:
-        print("Usage: python transcribe.py <audio_path> [model_size]")
+        print("Usage: python transcribe.py <audio_path> [model_size] [output_dir]")
         print("Model sizes: tiny, base, small, medium, large")
-        print("Example: python transcribe.py data/separated/audio_speaker_1.wav base")
+        print("Example: python transcribe.py data/separated/audio_speaker_1.wav base data/transcripts")
         sys.exit(1)
     
     audio_file = sys.argv[1]
     model = sys.argv[2] if len(sys.argv) > 2 else "base"
+    output_dir = sys.argv[3] if len(sys.argv) > 3 else "data/transcripts"
     
     print(f"Transcribing: {audio_file}")
     print(f"Model: {model}")
+    print(f"Output directory: {output_dir}")
     
     try:
         result = transcribe_audio(audio_file, model)
         
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate output filenames
+        base_name = os.path.splitext(os.path.basename(audio_file))[0]
+        txt_path = os.path.join(output_dir, f"{base_name}_transcript.txt")
+        json_path = os.path.join(output_dir, f"{base_name}_transcript.json")
+        
+        # Save plain text transcript
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(result['text'])
+        
+        # Save full JSON with segments
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        
         print(f"\nSUCCESS!")
         print(f"Language: {result['language']}")
         print(f"Segments: {len(result['segments'])}")
+        print(f"\nSaved to:")
+        print(f"  Text: {txt_path}")
+        print(f"  JSON: {json_path}")
         print(f"\nFull transcript:")
         print("-" * 40)
         print(result['text'])

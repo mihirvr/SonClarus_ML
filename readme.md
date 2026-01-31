@@ -36,13 +36,15 @@ python worker/separate.py data/denoised/noisy_audio_denoised.wav data/separated 
 
 **3. Transcribe Audio** - Speech to text
 ```bash
-python worker/transcribe.py <audio_path> [model_size]
+python worker/transcribe.py <audio_path> [model_size] [output_dir]
 
 # Model sizes: tiny, base, small, medium, large
 # Examples:
 python worker/transcribe.py data/separated/audio_speaker_1.wav
 python worker/transcribe.py data/separated/audio_speaker_1.wav base
+python worker/transcribe.py data/separated/audio_speaker_1.wav base data/transcripts
 ```
+Output: Saves `<filename>_transcript.txt` and `<filename>_transcript.json` to output_dir (default: `data/transcripts/`)
 
 **4. Generate Audit Artifacts** - Spectrograms & confidence reports
 ```bash
