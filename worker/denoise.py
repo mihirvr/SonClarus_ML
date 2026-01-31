@@ -1,39 +1,57 @@
 """
 denoise.py
 
-This module performs intelligent noise reduction on audio signals
-using a pretrained deep learning model.
+This module performs *soft* speech-preserving noise reduction
+using DeepFilterNet3 for real-time audio enhancement.
 
-Key principles:
+Design goals:
 - Inference only (no training)
-- Preserve speech content
-- Improve signal-to-noise ratio
+- Preserve speech intelligibility
+- Avoid aggressive over-suppression
 - CPU-first execution
+- Stable behavior for transcription pipelines
+
+Uses the official DeepFilterNet3 model.
 """
 
 import os
-import torch
-import torchaudio
+import sys
 
-from speechbrain.pretrained import SpectralMaskEnhancement
+import numpy as np
+
+# DeepFilterNet imports
+from df.enhance import enhance, init_df, load_audio, save_audio
 
 
 # -----------------------------
-# MODEL LOADING (ONCE)
+# CONFIGURATION
 # -----------------------------
-# We load the model at module level so it is reused across jobs.
-# This avoids reloading weights for every audio file.
-# This is critical for performance and memory efficiency.
+_TARGET_SAMPLE_RATE = 48000  # DeepFilter requires 48kHz
 
-ENHANCEMENT_MODEL = SpectralMaskEnhancement.from_hparams(
-    source="speechbrain/mtl-mimic-voicebank",
-    savedir="pretrained_models/denoising"
-)
+# Global model cache
+_DEEPFILTER_MODEL = None
+_DEEPFILTER_STATE = None
 
 
-def denoise_audio(audio_path, output_dir="data/denoised"):
+def _get_deepfilter_model():
     """
-    Perform noise reduction on a raw audio file.
+    Lazy-load and cache the DeepFilterNet3 model.
+    """
+    global _DEEPFILTER_MODEL, _DEEPFILTER_STATE
+    
+    if _DEEPFILTER_MODEL is None:
+        # Initialize DeepFilterNet3 model
+        # Downloads model automatically on first run
+        _DEEPFILTER_MODEL, _DEEPFILTER_STATE, _ = init_df()
+    
+    return _DEEPFILTER_MODEL, _DEEPFILTER_STATE
+
+
+def denoise_audio(audio_path, output_dir="data/denoised", atten_lim_db=None):
+    """
+    Perform speech-preserving noise reduction on an audio file.
+
+    Uses DeepFilterNet3 for high-quality noise suppression.
 
     Parameters
     ----------
@@ -43,6 +61,10 @@ def denoise_audio(audio_path, output_dir="data/denoised"):
     output_dir : str
         Directory where denoised audio will be saved
 
+    atten_lim_db : float, optional
+        Maximum attenuation in dB. If provided, limits noise reduction.
+        Default: None (use DeepFilter defaults)
+
     Returns
     -------
     denoised_audio_path : str
@@ -50,7 +72,7 @@ def denoise_audio(audio_path, output_dir="data/denoised"):
     """
 
     # -----------------------------
-    # 1. Basic validation
+    # 1. Validation
     # -----------------------------
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -58,37 +80,26 @@ def denoise_audio(audio_path, output_dir="data/denoised"):
     os.makedirs(output_dir, exist_ok=True)
 
     # -----------------------------
-    # 2. Load audio
+    # 2. Load DeepFilter model
     # -----------------------------
-    # torchaudio loads audio as:
-    # waveform shape -> [channels, samples]
-    waveform, sample_rate = torchaudio.load(audio_path)
+    model, df_state = _get_deepfilter_model()
 
     # -----------------------------
-    # 3. Convert to mono if needed
+    # 3. Load audio using DeepFilter's loader
     # -----------------------------
-    # Most enhancement models expect mono audio.
-    if waveform.shape[0] > 1:
-        waveform = torch.mean(waveform, dim=0, keepdim=True)
+    # DeepFilter handles resampling to 48kHz internally
+    audio, _ = load_audio(audio_path, sr=df_state.sr())
 
     # -----------------------------
-    # 4. Model expects batch dimension
+    # 4. Apply DeepFilter enhancement
     # -----------------------------
-    # Shape becomes: [batch, time]
-    waveform = waveform.squeeze(0).unsqueeze(0)
+    if atten_lim_db is not None:
+        enhanced_audio = enhance(model, df_state, audio, atten_lim_db=atten_lim_db)
+    else:
+        enhanced_audio = enhance(model, df_state, audio)
 
     # -----------------------------
-    # 5. Apply denoising model
-    # -----------------------------
-    # This performs spectral masking internally.
-    with torch.no_grad():
-        enhanced_waveform = ENHANCEMENT_MODEL.enhance_batch(
-            waveform,
-            lengths=torch.tensor([1.0])
-        )
-
-    # -----------------------------
-    # 6. Prepare output filename
+    # 5. Prepare output filename
     # -----------------------------
     base_name = os.path.basename(audio_path)
     name, _ = os.path.splitext(base_name)
@@ -99,12 +110,55 @@ def denoise_audio(audio_path, output_dir="data/denoised"):
     )
 
     # -----------------------------
-    # 7. Save denoised audio
+    # 6. Save denoised audio
     # -----------------------------
-    torchaudio.save(
-        denoised_audio_path,
-        enhanced_waveform.squeeze(0),
-        sample_rate
-    )
+    save_audio(denoised_audio_path, enhanced_audio, df_state.sr())
 
     return denoised_audio_path
+
+
+# -----------------------------
+# STANDALONE EXECUTION
+# -----------------------------
+if __name__ == "__main__":
+    """
+    Run denoising as a standalone script.
+    
+    Usage:
+        python denoise.py <input_audio_path> [output_directory] [atten_lim_db]
+    
+    Example:
+        python denoise.py data/raw/noisy_audio.wav data/denoised
+        python denoise.py data/raw/noisy_audio.wav data/denoised -20
+    """
+    
+    if len(sys.argv) < 2:
+        print("Usage: python denoise.py <input_audio_path> [output_directory] [atten_lim_db]")
+        print("Example: python denoise.py data/raw/noisy_audio.wav data/denoised")
+        print()
+        print("Arguments:")
+        print("  input_audio_path  : Path to noisy audio file")
+        print("  output_directory  : Where to save denoised audio (default: data/denoised)")
+        print("  atten_lim_db      : Optional max attenuation in dB (e.g., -20)")
+        sys.exit(1)
+    
+    input_audio = sys.argv[1]
+    output_directory = sys.argv[2] if len(sys.argv) > 2 else "data/denoised"
+    atten_db = float(sys.argv[3]) if len(sys.argv) > 3 else None
+    
+    print(f"DeepFilterNet3 Denoising")
+    print(f"=" * 40)
+    print(f"Input: {input_audio}")
+    print(f"Output directory: {output_directory}")
+    if atten_db:
+        print(f"Attenuation limit: {atten_db} dB")
+    print()
+    
+    try:
+        result_path = denoise_audio(input_audio, output_directory, atten_db)
+        print(f"SUCCESS: Denoised audio saved to: {result_path}")
+    except Exception as e:
+        print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

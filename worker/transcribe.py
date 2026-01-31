@@ -11,6 +11,7 @@ Key assumptions:
 """
 
 import os
+import sys
 import whisper
 
 
@@ -20,10 +21,22 @@ import whisper
 # Whisper models are large.
 # Loading once is critical for performance.
 
-WHISPER_MODEL = whisper.load_model("base")  # CPU-friendly
+_WHISPER_MODEL = None
 
 
-def transcribe_audio(audio_path):
+def _get_whisper_model(model_size="base"):
+    """
+    Lazy-load and cache the Whisper model.
+    """
+    global _WHISPER_MODEL
+    
+    if _WHISPER_MODEL is None:
+        _WHISPER_MODEL = whisper.load_model(model_size)
+    
+    return _WHISPER_MODEL
+
+
+def transcribe_audio(audio_path, model_size="base"):
     """
     Transcribe a single-speaker audio file.
 
@@ -31,6 +44,9 @@ def transcribe_audio(audio_path):
     ----------
     audio_path : str
         Path to single-speaker .wav file
+        
+    model_size : str
+        Whisper model size (tiny, base, small, medium, large)
 
     Returns
     -------
@@ -56,16 +72,21 @@ def transcribe_audio(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
     # -------------------------------------------------
-    # 2. Run Whisper transcription
+    # 2. Load Whisper model
+    # -------------------------------------------------
+    model = _get_whisper_model(model_size)
+
+    # -------------------------------------------------
+    # 3. Run Whisper transcription
     # -------------------------------------------------
     # fp16=False is REQUIRED for CPU inference
-    result = WHISPER_MODEL.transcribe(
+    result = model.transcribe(
         audio_path,
         fp16=False
     )
 
     # -------------------------------------------------
-    # 3. Extract relevant outputs
+    # 4. Extract relevant outputs
     # -------------------------------------------------
     transcript_data = {
         "text": result.get("text", "").strip(),
@@ -82,3 +103,52 @@ def transcribe_audio(audio_path):
         })
 
     return transcript_data
+
+
+# -------------------------------------------------
+# STANDALONE EXECUTION
+# -------------------------------------------------
+if __name__ == "__main__":
+    """
+    Run transcription as a standalone script.
+    
+    Usage:
+        python transcribe.py <audio_path> [model_size]
+    
+    Example:
+        python transcribe.py data/separated/audio_speaker_1.wav base
+    """
+    
+    if len(sys.argv) < 2:
+        print("Usage: python transcribe.py <audio_path> [model_size]")
+        print("Model sizes: tiny, base, small, medium, large")
+        print("Example: python transcribe.py data/separated/audio_speaker_1.wav base")
+        sys.exit(1)
+    
+    audio_file = sys.argv[1]
+    model = sys.argv[2] if len(sys.argv) > 2 else "base"
+    
+    print(f"Transcribing: {audio_file}")
+    print(f"Model: {model}")
+    
+    try:
+        result = transcribe_audio(audio_file, model)
+        
+        print(f"\nSUCCESS!")
+        print(f"Language: {result['language']}")
+        print(f"Segments: {len(result['segments'])}")
+        print(f"\nFull transcript:")
+        print("-" * 40)
+        print(result['text'])
+        print("-" * 40)
+        
+        if result['segments']:
+            print(f"\nSegment details:")
+            for seg in result['segments'][:5]:  # Show first 5
+                print(f"  [{seg['start']:.1f}s - {seg['end']:.1f}s] {seg['text']}")
+            if len(result['segments']) > 5:
+                print(f"  ... and {len(result['segments']) - 5} more segments")
+                
+    except Exception as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
